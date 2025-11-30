@@ -107,8 +107,70 @@ class CardChecker:
         
         return 'Unknown'
     
-    def fill_card_details(self, card_number, exp_month, exp_year, cvv, name="John Doe"):
-        """Fill card details - works with multiple gateways"""
+    def fill_stripe_checkout(self, card_number, exp_month, exp_year, cvv, name="John Doe"):
+        """Fill Stripe hosted checkout page"""
+        try:
+            # Wait for Stripe iframe to load
+            time.sleep(3)
+            
+            # Switch to Stripe iframe
+            iframes = self.driver.find_elements(By.TAG_NAME, 'iframe')
+            
+            for iframe in iframes:
+                try:
+                    self.driver.switch_to.frame(iframe)
+                    
+                    # Try to find card number field in this iframe
+                    try:
+                        # Stripe uses specific field names
+                        card_field = self.driver.find_element(By.NAME, 'cardnumber')
+                        
+                        # Fill card number
+                        card_field.send_keys(card_number)
+                        logger.info("✅ Filled card number (Stripe)")
+                        time.sleep(1)
+                        
+                        # Fill expiry (Stripe format: MM/YY)
+                        exp_field = self.driver.find_element(By.NAME, 'exp-date')
+                        exp_field.send_keys(f"{exp_month}{exp_year[-2:]}")
+                        logger.info("✅ Filled expiry (Stripe)")
+                        time.sleep(1)
+                        
+                        # Fill CVC
+                        cvc_field = self.driver.find_element(By.NAME, 'cvc')
+                        cvc_field.send_keys(cvv)
+                        logger.info("✅ Filled CVC (Stripe)")
+                        time.sleep(1)
+                        
+                        # Fill name (if exists)
+                        try:
+                            name_field = self.driver.find_element(By.NAME, 'name')
+                            name_field.send_keys(name)
+                            logger.info("✅ Filled name (Stripe)")
+                        except:
+                            pass
+                        
+                        # Switch back
+                        self.driver.switch_to.default_content()
+                        return True
+                        
+                    except:
+                        self.driver.switch_to.default_content()
+                        continue
+                        
+                except:
+                    self.driver.switch_to.default_content()
+                    continue
+            
+            # If iframe method failed, try direct selectors
+            return self.fill_card_details_generic(card_number, exp_month, exp_year, cvv, name)
+            
+        except Exception as e:
+            logger.error(f"❌ Error filling Stripe checkout: {e}")
+            return False
+    
+    def fill_card_details_generic(self, card_number, exp_month, exp_year, cvv, name="John Doe"):
+        """Fill card details - generic method for multiple gateways"""
         try:
             # Card number selectors
             card_selectors = [
@@ -433,6 +495,10 @@ class CardChecker:
         except:
             return None
     
+    def is_stripe_checkout(self, url):
+        """Check if URL is Stripe hosted checkout"""
+        return 'checkout.stripe.com' in url.lower()
+    
     def check_card(self, url, card_number, exp_month, exp_year, cvv, name="John Doe"):
         """Main card checking function"""
         try:
@@ -456,8 +522,16 @@ class CardChecker:
             gateway = self.detect_gateway(url)
             logger.info(f"💳 Gateway: {gateway}")
             
+            # Check if Stripe hosted checkout
+            is_stripe = self.is_stripe_checkout(url)
+            
             # Fill card details
-            if not self.fill_card_details(card_number, exp_month, exp_year, cvv, name):
+            if is_stripe:
+                fill_success = self.fill_stripe_checkout(card_number, exp_month, exp_year, cvv, name)
+            else:
+                fill_success = self.fill_card_details_generic(card_number, exp_month, exp_year, cvv, name)
+            
+            if not fill_success:
                 return {
                     'status': 'Error ⚠️',
                     'message': 'Could not fill card details',
