@@ -273,11 +273,32 @@ class UniversalCheckoutBot:
     
     def add_to_cart_universal(self, product_url):
         """إضافة للسلة - يدعم جميع المنصات"""
-        logger.info(f"🛒 إضافة للسلة: {product_url}")
+        logger.info(f"🛍️ إضافة للسلة: {product_url}")
         
         try:
             self.driver.get(product_url)
             time.sleep(3)
+            
+            # اختيار options إذا وجدت (مثل المقاس، اللون، إلخ)
+            try:
+                selects = self.driver.find_elements(By.TAG_NAME, 'select')
+                for select in selects:
+                    try:
+                        if select.is_displayed():
+                            # اختر أول خيار متاح (ليس "Choose an option")
+                            options = select.find_elements(By.TAG_NAME, 'option')
+                            for option in options[1:]:  # تخطى الخيار الأول
+                                try:
+                                    option.click()
+                                    logger.info(f"✅ اخترنا: {option.text}")
+                                    time.sleep(0.5)
+                                    break
+                                except:
+                                    continue
+                    except:
+                        continue
+            except:
+                pass
             
             # Selectors شاملة لأزرار "Add to Cart"
             add_to_cart_selectors = [
