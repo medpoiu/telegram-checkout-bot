@@ -400,12 +400,47 @@ class UniversalCheckoutBot:
                 except:
                     continue
             
-            # التحقق النهائي
+            # التحقق النهائي - يجب أن يكون checkout وليس cart فقط
             current = self.driver.current_url.lower()
-            if 'checkout' in current or 'cart' in current:
+            
+            # إذا كنا في cart، حاول النقر على زر checkout
+            if 'cart' in current and 'checkout' not in current:
+                logger.info("📍 نحن في صفحة السلة، البحث عن زر checkout...")
+                checkout_buttons = [
+                    "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'checkout')]",
+                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'checkout')]",
+                    "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'proceed')]",
+                    ".wc-proceed-to-checkout a",
+                    "a.checkout-button"
+                ]
+                
+                for btn_selector in checkout_buttons:
+                    try:
+                        if btn_selector.startswith('//'):
+                            btn = self.driver.find_element(By.XPATH, btn_selector)
+                        else:
+                            btn = self.driver.find_element(By.CSS_SELECTOR, btn_selector)
+                        
+                        if btn.is_displayed():
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                            time.sleep(1)
+                            btn.click()
+                            logger.info(f"✅ نقر على زر checkout")
+                            time.sleep(4)
+                            
+                            if 'checkout' in self.driver.current_url.lower():
+                                logger.info("✅ وصلنا لصفحة checkout!")
+                                return True
+                    except:
+                        continue
+            
+            # تحقق نهائي
+            current = self.driver.current_url.lower()
+            if 'checkout' in current:
+                logger.info("✅ نحن في صفحة checkout")
                 return True
             
-            logger.warning(f"⚠️ الصفحة الحالية: {self.driver.current_url}")
+            logger.warning(f"⚠️ لم نصل لـ checkout. الصفحة الحالية: {self.driver.current_url}")
             return False
             
         except Exception as e:
